@@ -57,16 +57,27 @@ export function getDb(): Database.Database {
       }
     }
 
-    db = new Database(dbPath);
     try {
-      db.pragma('journal_mode = WAL');
-    } catch (e) {
-      console.warn('Could not set WAL mode (likely readonly filesystem fallback):', e);
+      db = new Database(dbPath);
+      try {
+        db.pragma('journal_mode = WAL');
+      } catch (e) {
+        console.warn('Could not set WAL mode (likely readonly filesystem fallback):', e);
+      }
+      db.pragma('foreign_keys = ON');
+      initializeDb(db);
+      migrateDb(db);
+      seedAdmin(db);
+      console.log('Database initialized successfully at:', dbPath);
+    } catch (dbError: any) {
+      console.error('CRITICAL: Failed to open/initialize database:', {
+        path: dbPath,
+        error: dbError?.message || dbError,
+        isVercel: !!process.env.VERCEL,
+        cwd: process.cwd(),
+      });
+      throw dbError; // Re-throw so the caller knows DB is broken
     }
-    db.pragma('foreign_keys = ON');
-    initializeDb(db);
-    migrateDb(db);
-    seedAdmin(db);
   }
   return db;
 }

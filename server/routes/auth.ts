@@ -121,8 +121,8 @@ router.post('/login', async (req, res) => {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ success: false, message: 'Validation error', errors: error.errors });
         }
-        console.error('Login error:', error);
-        res.status(500).json({ success: false, message: 'Internal server error' });
+        console.error('Login error:', error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : error);
+        res.status(500).json({ success: false, message: 'Internal server error', detail: error instanceof Error ? error.message : String(error) });
     }
 });
 

@@ -25,7 +25,16 @@ export function Login() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ username, password }),
             });
-            const data = await res.json();
+
+            let data: any;
+            try {
+                data = await res.json();
+            } catch {
+                // Server returned non-JSON (e.g. HTML error page)
+                const text = await res.text().catch(() => "");
+                toast({ title: "Server Error", description: `Server returned status ${res.status}. ${text.slice(0, 100)}`, variant: "destructive" });
+                return;
+            }
 
             if (data.success) {
                 if (data.user.mustChangePassword) {
@@ -37,10 +46,11 @@ export function Login() {
                     toast({ title: "Welcome back!", description: `Logged in as ${data.user.username}` });
                 }
             } else {
-                toast({ title: "Login Failed", description: data.message, variant: "destructive" });
+                toast({ title: "Login Failed", description: data.message || "Unknown error", variant: "destructive" });
             }
-        } catch (err) {
-            toast({ title: "Error", description: "Something went wrong", variant: "destructive" });
+        } catch (err: any) {
+            console.error("Login error:", err);
+            toast({ title: "Connection Error", description: err?.message || "Could not reach the server. Please try again.", variant: "destructive" });
         } finally {
             setIsLoading(false);
         }
