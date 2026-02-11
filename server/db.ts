@@ -21,12 +21,32 @@ export function getDb(): Database.Database {
       try {
         // Only copy if it doesn't exist (preserve data across warm starts)
         if (!fs.existsSync(TMP_DB_PATH)) {
-          // Check if source exists
-          if (fs.existsSync(SOURCE_DB_PATH)) {
-            fs.copyFileSync(SOURCE_DB_PATH, TMP_DB_PATH);
-            console.log(`Copied database to ${TMP_DB_PATH}`);
+          // Search for the DB in likely locations
+          const searchPaths = [
+            SOURCE_DB_PATH,
+            path.join(process.cwd(), 'aethernest.db'),
+            path.join(process.cwd(), 'api', 'aethernest.db'), // Sometimes Vercel puts it in api/
+            path.join(__dirname, 'aethernest.db'),
+          ];
+
+          let foundDbPath = null;
+          for (const p of searchPaths) {
+            if (fs.existsSync(p)) {
+              foundDbPath = p;
+              break;
+            }
+          }
+
+          if (foundDbPath) {
+            fs.copyFileSync(foundDbPath, TMP_DB_PATH);
+            console.log(`Copied database from ${foundDbPath} to ${TMP_DB_PATH}`);
           } else {
-            console.warn(`Source database not found at ${SOURCE_DB_PATH}, creating new empty DB at ${TMP_DB_PATH}`);
+            console.warn(`Source database not found in [${searchPaths.join(', ')}]. Creating new empty DB at ${TMP_DB_PATH}`);
+            // List files in current directory to help debugging
+            try {
+              console.log('Files in CWD:', fs.readdirSync(process.cwd()).join(', '));
+              console.log('Files in __dirname:', fs.readdirSync(__dirname).join(', '));
+            } catch (e) { console.error('Error listing files:', e); }
           }
         }
         dbPath = TMP_DB_PATH;
