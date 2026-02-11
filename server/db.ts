@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,7 +47,6 @@ export function getDb(): Database.Database {
             // List files in current directory to help debugging
             try {
               console.log('Files in CWD:', fs.readdirSync(process.cwd()).join(', '));
-              console.log('Files in __dirname:', fs.readdirSync(__dirname).join(', '));
             } catch (e) { console.error('Error listing files:', e); }
           }
         }
@@ -57,13 +58,37 @@ export function getDb(): Database.Database {
     }
 
     db = new Database(dbPath);
-    db.pragma('journal_mode = WAL');
+    try {
+      db.pragma('journal_mode = WAL');
+    } catch (e) {
+      console.warn('Could not set WAL mode (likely readonly filesystem fallback):', e);
+    }
     db.pragma('foreign_keys = ON');
     initializeDb(db);
     migrateDb(db);
+    seedAdmin(db);
   }
   return db;
 }
+
+function seedAdmin(db: Database.Database) {
+  try {
+    const adminRole = db.prepare("SELECT id FROM users WHERE role = 'ADMIN'").get();
+    if (!adminRole) {
+      console.log('Seeding initial admin user...');
+      const hash = bcrypt.hashSync('admin123', 10);
+      const id = randomUUID();
+      db.prepare(`
+          INSERT INTO users (id, username, email, password_hash, role, must_change_password, verification_status, tournament_status)
+          VALUES (?, 'admin', 'admin@example.com', ?, 'ADMIN', 1, 'verified', 'none')
+        `).run(id, hash);
+      console.log('Admin user created: admin / admin123');
+    }
+  } catch (err) {
+    console.error('Failed to seed admin:', err);
+  }
+}
+
 
 function initializeDb(db: Database.Database) {
   db.exec(`
