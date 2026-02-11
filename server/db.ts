@@ -1,18 +1,42 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Store DB file in project root
-const DB_PATH = path.join(__dirname, '..', 'aethernest.db');
+const SOURCE_DB_PATH = path.join(__dirname, '..', 'aethernest.db');
 
 let db: Database.Database;
 
 export function getDb(): Database.Database {
   if (!db) {
-    db = new Database(DB_PATH);
+    let dbPath = SOURCE_DB_PATH;
+
+    // Vercel-specific: Copy DB to /tmp (writable)
+    if (process.env.VERCEL) {
+      const TMP_DB_PATH = '/tmp/aethernest.db';
+      try {
+        // Only copy if it doesn't exist (preserve data across warm starts)
+        if (!fs.existsSync(TMP_DB_PATH)) {
+          // Check if source exists
+          if (fs.existsSync(SOURCE_DB_PATH)) {
+            fs.copyFileSync(SOURCE_DB_PATH, TMP_DB_PATH);
+            console.log(`Copied database to ${TMP_DB_PATH}`);
+          } else {
+            console.warn(`Source database not found at ${SOURCE_DB_PATH}, creating new empty DB at ${TMP_DB_PATH}`);
+          }
+        }
+        dbPath = TMP_DB_PATH;
+      } catch (err) {
+        console.error('Failed to copy DB to /tmp:', err);
+        // Fallback to source (might fail)
+      }
+    }
+
+    db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     initializeDb(db);
