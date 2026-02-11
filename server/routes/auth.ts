@@ -126,6 +126,40 @@ router.post('/login', async (req, res) => {
     }
 });
 
+// ── Setup Admin (Vercel Only) ───────────────────────────────────
+router.get('/setup-admin', async (req, res) => {
+    // Only allow this in Vercel environment or if explicity enabled
+    if (!process.env.VERCEL && process.env.NODE_ENV !== 'development') {
+        return res.status(403).json({ success: false, message: 'Not allowed' });
+    }
+
+    try {
+        const db = getDb();
+        const existingAdmin = db.prepare("SELECT id FROM users WHERE role = 'ADMIN'").get();
+
+        if (existingAdmin) {
+            return res.status(400).json({ success: false, message: 'Admin already exists' });
+        }
+
+        const passwordHash = await bcrypt.hash('admin123', 10);
+        const userId = randomUUID();
+
+        db.prepare(`
+            INSERT INTO users (id, username, email, password_hash, role, must_change_password, verification_status, tournament_status)
+            VALUES (?, 'admin', 'admin@example.com', ?, 'ADMIN', 1, 'verified', 'none')
+        `).run(userId, passwordHash);
+
+        res.json({
+            success: true,
+            message: 'Admin created. Username: admin, Password: admin123',
+            user: { id: userId, username: 'admin', role: 'ADMIN' }
+        });
+    } catch (error) {
+        console.error('Setup admin error:', error);
+        res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+});
+
 // ── Public Registration ──────────────────────────────────────────
 
 router.post('/register', async (req, res) => {
