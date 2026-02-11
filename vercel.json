@@ -12,9 +12,7 @@
     ],
     "functions": {
         "api/index.ts": {
-            "includeFiles": [
-                "aethernest.db"
-            ]
+            "includeFiles": "aethernest.db"
         }
     }
 }
