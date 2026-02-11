@@ -12,7 +12,6 @@
     ],
     "functions": {
         "api/index.ts": {
-            "path": "api/index.ts",
             "includeFiles": [
                 "aethernest.db"
             ]
