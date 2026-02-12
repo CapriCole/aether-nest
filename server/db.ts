@@ -93,6 +93,23 @@ class DatabaseWrapper {
   close() {
     this._db.close();
   }
+
+  transaction = (fn: (...args: any[]) => any) => {
+    const db = this._db;
+    const dbPath = this._dbPath;
+    return (...args: any[]) => {
+      try {
+        db.exec('BEGIN');
+        const result = fn(...args);
+        db.exec('COMMIT');
+        saveToDisk(db, dbPath);
+        return result;
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+    };
+  }
 }
 
 function saveToDisk(db: SqlJsDatabase, dbPath: string) {
@@ -127,7 +144,7 @@ async function initDbAsync(): Promise<void> {
           path.join(__dirname, 'aethernest.db'),
         ];
 
-        let foundDbPath = null;
+        let foundDbPath: string | null = null;
         for (const p of searchPaths) {
           if (fs.existsSync(p)) {
             foundDbPath = p;

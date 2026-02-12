@@ -228,10 +228,10 @@ function generateDoubleEliminationBracket(
         let wbMatchesInRound = bracketSize / 2;
         for (let round = 1; round <= wbRounds; round++) {
             for (let m = 1; m <= wbMatchesInRound; m++) {
-                let p1 = null;
-                let p2 = null;
+                let p1: string | null = null;
+                let p2: string | null = null;
                 let status = 'pending';
-                let winnerId = null;
+                let winnerId: string | null = null;
 
                 if (round === 1) {
                     p1 = flatWB[(m - 1) * 2];
