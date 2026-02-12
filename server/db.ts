@@ -204,8 +204,10 @@ async function initDbAsync(): Promise<void> {
   }
 }
 
-// Eagerly start initialization
-initPromise = initDbAsync().catch(err => {
+// Eagerly start initialization but keep rejection state so callers
+// of ensureDbReady() can see and surface initialization failures
+initPromise = initDbAsync();
+initPromise.catch(err => {
   console.error('Background DB init failed:', err);
 });
 
