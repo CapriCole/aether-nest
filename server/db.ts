@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -11,85 +11,211 @@ const __dirname = path.dirname(__filename);
 // Store DB file in project root
 const SOURCE_DB_PATH = path.join(__dirname, '..', 'aethernest.db');
 
-let db: Database.Database;
+/**
+ * Compatibility wrapper around sql.js Database to match the better-sqlite3 API
+ * used by all route handlers (prepare/get/run/all pattern).
+ */
+class DatabaseWrapper {
+  private _db: SqlJsDatabase;
+  private _dbPath: string;
 
-export function getDb(): Database.Database {
-  if (!db) {
-    let dbPath = SOURCE_DB_PATH;
+  constructor(db: SqlJsDatabase, dbPath: string) {
+    this._db = db;
+    this._dbPath = dbPath;
+  }
 
-    // Vercel-specific: Copy DB to /tmp (writable)
-    if (process.env.VERCEL) {
-      const TMP_DB_PATH = '/tmp/aethernest.db';
-      try {
-        // Only copy if it doesn't exist (preserve data across warm starts)
-        if (!fs.existsSync(TMP_DB_PATH)) {
-          // Search for the DB in likely locations
-          const searchPaths = [
-            SOURCE_DB_PATH,
-            path.join(process.cwd(), 'aethernest.db'),
-            path.join(process.cwd(), 'api', 'aethernest.db'), // Sometimes Vercel puts it in api/
-            path.join(__dirname, 'aethernest.db'),
-          ];
-
-          let foundDbPath = null;
-          for (const p of searchPaths) {
-            if (fs.existsSync(p)) {
-              foundDbPath = p;
-              break;
-            }
+  prepare(sql: string) {
+    const db = this._db;
+    const dbPath = this._dbPath;
+    return {
+      get(...params: any[]): any {
+        try {
+          const stmt = db.prepare(sql);
+          if (params.length > 0) stmt.bind(params);
+          if (stmt.step()) {
+            const cols = stmt.getColumnNames();
+            const vals = stmt.get();
+            const row: any = {};
+            cols.forEach((col: string, i: number) => { row[col] = vals[i]; });
+            stmt.free();
+            return row;
           }
+          stmt.free();
+          return undefined;
+        } catch (e) {
+          throw e;
+        }
+      },
+      all(...params: any[]): any[] {
+        try {
+          const stmt = db.prepare(sql);
+          if (params.length > 0) stmt.bind(params);
+          const rows: any[] = [];
+          while (stmt.step()) {
+            const cols = stmt.getColumnNames();
+            const vals = stmt.get();
+            const row: any = {};
+            cols.forEach((col: string, i: number) => { row[col] = vals[i]; });
+            rows.push(row);
+          }
+          stmt.free();
+          return rows;
+        } catch (e) {
+          throw e;
+        }
+      },
+      run(...params: any[]): { changes: number } {
+        try {
+          db.run(sql, params);
+          // Save to disk after writes
+          saveToDisk(db, dbPath);
+          return { changes: db.getRowsModified() };
+        } catch (e) {
+          throw e;
+        }
+      }
+    };
+  }
 
-          if (foundDbPath) {
-            fs.copyFileSync(foundDbPath, TMP_DB_PATH);
-            console.log(`Copied database from ${foundDbPath} to ${TMP_DB_PATH}`);
-          } else {
-            console.warn(`Source database not found in [${searchPaths.join(', ')}]. Creating new empty DB at ${TMP_DB_PATH}`);
-            // List files in current directory to help debugging
-            try {
-              console.log('Files in CWD:', fs.readdirSync(process.cwd()).join(', '));
-            } catch (e) { console.error('Error listing files:', e); }
+  exec(sql: string) {
+    this._db.exec(sql);
+    saveToDisk(this._db, this._dbPath);
+  }
+
+  pragma(pragma: string) {
+    try {
+      this._db.exec(`PRAGMA ${pragma}`);
+    } catch (e) {
+      console.warn(`Could not set PRAGMA ${pragma}:`, e);
+    }
+  }
+
+  close() {
+    this._db.close();
+  }
+}
+
+function saveToDisk(db: SqlJsDatabase, dbPath: string) {
+  try {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(dbPath, buffer);
+  } catch (e) {
+    console.warn('Could not save DB to disk:', e);
+  }
+}
+
+let db: DatabaseWrapper;
+let initPromise: Promise<void> | null = null;
+
+async function initDbAsync(): Promise<void> {
+  if (db) return;
+
+  const SQL = await initSqlJs();
+
+  let dbPath = SOURCE_DB_PATH;
+
+  // Vercel-specific: Use /tmp (writable)
+  if (process.env.VERCEL) {
+    const TMP_DB_PATH = '/tmp/aethernest.db';
+    try {
+      if (!fs.existsSync(TMP_DB_PATH)) {
+        const searchPaths = [
+          SOURCE_DB_PATH,
+          path.join(process.cwd(), 'aethernest.db'),
+          path.join(process.cwd(), 'api', 'aethernest.db'),
+          path.join(__dirname, 'aethernest.db'),
+        ];
+
+        let foundDbPath = null;
+        for (const p of searchPaths) {
+          if (fs.existsSync(p)) {
+            foundDbPath = p;
+            break;
           }
         }
-        dbPath = TMP_DB_PATH;
-      } catch (err) {
-        console.error('Failed to copy DB to /tmp:', err);
-        // Fallback to source (might fail)
+
+        if (foundDbPath) {
+          fs.copyFileSync(foundDbPath, TMP_DB_PATH);
+          console.log(`Copied database from ${foundDbPath} to ${TMP_DB_PATH}`);
+        } else {
+          console.warn(`Source database not found in [${searchPaths.join(', ')}]. Creating new empty DB at ${TMP_DB_PATH}`);
+          try {
+            console.log('Files in CWD:', fs.readdirSync(process.cwd()).join(', '));
+          } catch (e) { console.error('Error listing files:', e); }
+        }
       }
+      dbPath = TMP_DB_PATH;
+    } catch (err) {
+      console.error('Failed to copy DB to /tmp:', err);
+    }
+  }
+
+  try {
+    let sqlDb: SqlJsDatabase;
+
+    // Load existing DB from file if it exists, otherwise create fresh
+    if (fs.existsSync(dbPath)) {
+      const fileBuffer = fs.readFileSync(dbPath);
+      sqlDb = new SQL.Database(fileBuffer);
+      console.log('Loaded existing database from:', dbPath);
+    } else {
+      sqlDb = new SQL.Database();
+      console.log('Created new database, will save to:', dbPath);
     }
 
+    db = new DatabaseWrapper(sqlDb, dbPath);
+
     try {
-      db = new Database(dbPath);
-      try {
-        db.pragma('journal_mode = WAL');
-      } catch (e) {
-        console.warn('Could not set WAL mode (likely readonly filesystem fallback):', e);
-      }
-      db.pragma('foreign_keys = ON');
-      initializeDb(db);
-      migrateDb(db);
-      seedAdmin(db);
-      console.log('Database initialized successfully at:', dbPath);
-    } catch (dbError: any) {
-      console.error('CRITICAL: Failed to open/initialize database:', {
-        path: dbPath,
-        error: dbError?.message || dbError,
-        isVercel: !!process.env.VERCEL,
-        cwd: process.cwd(),
-      });
-      throw dbError; // Re-throw so the caller knows DB is broken
+      db.pragma('journal_mode = WAL');
+    } catch (e) {
+      console.warn('Could not set WAL mode:', e);
     }
+    db.pragma('foreign_keys = ON');
+    initializeDb(db);
+    migrateDb(db);
+    seedAdmin(db);
+    console.log('Database initialized successfully at:', dbPath);
+  } catch (dbError: any) {
+    console.error('CRITICAL: Failed to open/initialize database:', {
+      path: dbPath,
+      error: dbError?.message || dbError,
+      isVercel: !!process.env.VERCEL,
+      cwd: process.cwd(),
+    });
+    throw dbError;
+  }
+}
+
+// Eagerly start initialization
+initPromise = initDbAsync().catch(err => {
+  console.error('Background DB init failed:', err);
+});
+
+export function getDb(): DatabaseWrapper {
+  if (!db) {
+    throw new Error('Database not initialized yet. Call ensureDbReady() first.');
   }
   return db;
 }
 
-function seedAdmin(db: Database.Database) {
+export async function ensureDbReady(): Promise<void> {
+  if (db) return;
+  if (initPromise) {
+    await initPromise;
+  } else {
+    await initDbAsync();
+  }
+}
+
+function seedAdmin(dbw: DatabaseWrapper) {
   try {
-    const adminRole = db.prepare("SELECT id FROM users WHERE role = 'ADMIN'").get();
+    const adminRole = dbw.prepare("SELECT id FROM users WHERE role = 'ADMIN'").get();
     if (!adminRole) {
       console.log('Seeding initial admin user...');
       const hash = bcrypt.hashSync('admin123', 10);
       const id = randomUUID();
-      db.prepare(`
+      dbw.prepare(`
           INSERT INTO users (id, username, email, password_hash, role, must_change_password, verification_status, tournament_status)
           VALUES (?, 'admin', 'admin@example.com', ?, 'ADMIN', 1, 'verified', 'none')
         `).run(id, hash);
@@ -101,8 +227,8 @@ function seedAdmin(db: Database.Database) {
 }
 
 
-function initializeDb(db: Database.Database) {
-  db.exec(`
+function initializeDb(dbw: DatabaseWrapper) {
+  dbw.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
@@ -137,7 +263,6 @@ function initializeDb(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
     CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
     CREATE INDEX IF NOT EXISTS idx_users_verification ON users(verification_status);
-    CREATE INDEX IF NOT EXISTS idx_users_tournament ON users(tournament_status);
 
     CREATE TABLE IF NOT EXISTS teams (
       id TEXT PRIMARY KEY,
@@ -210,7 +335,7 @@ function initializeDb(db: Database.Database) {
       tournament_id TEXT NOT NULL,
       participant_id TEXT NOT NULL,
       seed INTEGER,
-      group_number INTEGER, -- For Group Stage formats
+      group_number INTEGER,
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','eliminated','withdrawn')),
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (tournament_id) REFERENCES tournaments(id),
@@ -249,8 +374,8 @@ function initializeDb(db: Database.Database) {
       match_id TEXT NOT NULL,
       participant_id TEXT NOT NULL,
       score INTEGER DEFAULT 0,
-      rank INTEGER, -- Placement in the match/lobby
-      kills INTEGER DEFAULT 0, -- Specific for BR
+      rank INTEGER,
+      kills INTEGER DEFAULT 0,
       status TEXT DEFAULT 'active',
       FOREIGN KEY (match_id) REFERENCES matches(id),
       UNIQUE(match_id, participant_id)
@@ -261,20 +386,17 @@ function initializeDb(db: Database.Database) {
   `);
 }
 
-function migrateDb(db: Database.Database) {
-  // Add tournament_status column if it doesn't exist (for existing databases)
+function migrateDb(dbw: DatabaseWrapper) {
   try {
-    db.exec(`ALTER TABLE users ADD COLUMN tournament_status TEXT NOT NULL DEFAULT 'none' CHECK(tournament_status IN ('none', 'qualified', 'team_leader', 'team_member', 'eliminated'))`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_users_tournament ON users(tournament_status)`);
+    dbw.exec(`ALTER TABLE users ADD COLUMN tournament_status TEXT NOT NULL DEFAULT 'none' CHECK(tournament_status IN ('none', 'qualified', 'team_leader', 'team_member', 'eliminated'))`);
+    dbw.exec(`CREATE INDEX IF NOT EXISTS idx_users_tournament ON users(tournament_status)`);
 
-    // Add match_label to matches
     try {
-      db.exec(`ALTER TABLE matches ADD COLUMN match_label TEXT`);
+      dbw.exec(`ALTER TABLE matches ADD COLUMN match_label TEXT`);
     } catch (e: any) {
       if (!e.message?.includes('duplicate column')) console.error('Migration error:', e);
     }
   } catch (e: any) {
-    // Column already exists — safe to ignore
     if (!e.message?.includes('duplicate column')) {
       console.error('Migration error:', e);
     }

@@ -1,5 +1,6 @@
 import { createServer } from "../server";
 import serverless from "serverless-http";
+import { ensureDbReady } from "../server/db";
 
 export const config = {
     api: {
@@ -7,14 +8,16 @@ export const config = {
     },
 };
 
-let handler: any;
-try {
-    const app = createServer();
-    handler = serverless(app);
-} catch (err: any) {
-    console.error("Failed to initialize server:", err);
-    // Return a diagnostic handler so Vercel doesn't just show a blank 500
-    handler = async (req: any, res: any) => {
+const app = createServer();
+const sls = serverless(app);
+
+// Wrap handler to ensure DB is initialized before each request
+const handler = async (req: any, res: any) => {
+    try {
+        await ensureDbReady();
+        return sls(req, res);
+    } catch (err: any) {
+        console.error("Server handler error:", err);
         res.statusCode = 500;
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify({
@@ -22,7 +25,7 @@ try {
             message: "Server initialization failed",
             error: err?.message || String(err),
         }));
-    };
-}
+    }
+};
 
 export default handler;
